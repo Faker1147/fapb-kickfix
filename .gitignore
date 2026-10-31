@@ -1,0 +1,21 @@
+# no binaries / no game data
+*.dll
+*.exe
+*.dmp
+*.zip
+*.7z
+
+# backups produced by install.ps1 (they contain the original dll)
+backup/
+*.bak
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
