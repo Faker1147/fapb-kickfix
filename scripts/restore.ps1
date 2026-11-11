@@ -51,17 +51,29 @@ if (-not $BackupDir) {
     $BackupDir = $latest.FullName
 }
 
-$plugins = Join-Path $GameDir 'cstrike\addons\metamod\plugins.ini'
-$dll = Join-Path $GameDir 'cstrike\addons\fapb\dlls\fapb.dll'
-$bPlugins = Join-Path $BackupDir 'plugins.ini'
-$bDll = Join-Path $BackupDir 'fapb.dll'
+$map = @(
+    @{ File = 'plugins.ini'; Dest = 'cstrike\addons\metamod\plugins.ini' },
+    @{ File = 'fapb.dll';    Dest = 'cstrike\addons\fapb\dlls\fapb.dll' },
+    @{ File = 'ABPB.dll';    Dest = 'cstrike\addons\ABPB\bin\ABPB.dll' },
+    @{ File = 'fapb.cfg';    Dest = 'cstrike\addons\fapb\config\fapb.cfg' },
+    @{ File = 'ABPB.cfg';    Dest = 'cstrike\addons\ABPB\conf\ABPB.cfg' }
+)
 
-if (Test-Path -LiteralPath $bPlugins) {
-    Copy-Item -LiteralPath $bPlugins -Destination $plugins -Force
-    Write-Host "Restored plugins.ini" -ForegroundColor Green
+$restored = 0
+foreach ($m in $map) {
+    $src = Join-Path $BackupDir $m.File
+    if (-not (Test-Path -LiteralPath $src)) { continue }
+    $dst = Join-Path $GameDir $m.Dest
+    if (-not (Test-Path -LiteralPath (Split-Path -Parent $dst))) {
+        Write-Warning "target folder missing, skipped: $dst"
+        continue
+    }
+    Copy-Item -LiteralPath $src -Destination $dst -Force
+    Write-Host "Restored $($m.File)" -ForegroundColor Green
+    $restored++
 }
-if (Test-Path -LiteralPath $bDll) {
-    Copy-Item -LiteralPath $bDll -Destination $dll -Force
-    Write-Host "Restored fapb.dll" -ForegroundColor Green
+
+if ($restored -eq 0) {
+    Write-Warning "No known file found in $BackupDir"
 }
 Write-Host "From: $BackupDir" -ForegroundColor DarkGray

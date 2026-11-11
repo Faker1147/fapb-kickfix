@@ -161,14 +161,36 @@ win32 addons/fapb/dlls/fapb.dll
 
 ---
 
+## 与 ABPB 共存（1.1.0 新增）
+
+ABPB 4.3.3（AiBo 分支）可以和 FAPB 装在一起，但 ABPB 的"检测到别的 BOT 就让位"守卫
+**认不出 FAPB**：它找的是 `fapb_quota` / `fapb_version`，而 FAPB 注册的是
+`fb_quota` / `fb_version`。结果两边都保持补位，还是会出事。
+
+```powershell
+# ABPB 主导（推荐）：ABPB 刷 Bot，FAPB 只挂着不补位
+powershell -ExecutionPolicy Bypass -File .\scripts\fapb_abpb_setup.ps1 -GameDir "D:\CS1.6" -Mode abpb
+
+# FAPB 主导：ABPB 让位，并给 ABPB.dll 打守卫补丁
+powershell -ExecutionPolicy Bypass -File .\scripts\fapb_abpb_setup.ps1 -GameDir "D:\CS1.6" -Mode fapb
+```
+
+守卫补丁只改 ABPB.dll 的 22 个字节（两段 cvar 名字 + 两个长度字段），
+把 `fapb_quota` → `fb_quota`、`fapb_version` → `fb_version`，可 `--revert`。
+细节和取证见 [docs/abpb-compat.md](docs/abpb-compat.md)。
+
+---
+
 ## 工具
 
 | 脚本 | 作用 |
 | --- | --- |
 | `scripts/install.ps1` | 一键：备份 → 单核心 `plugins.ini` → DLL 补丁 |
-| `scripts/restore.ps1` | 从备份完整还原 |
+| `scripts/restore.ps1` | 从备份完整还原（含 ABPB 相关文件） |
 | `scripts/fapb_patch.py` | 打补丁 / 还原 / 校验，支持 `--dry-run`、`--json` |
 | `scripts/doctor.py` | 体检：Bot 核心数量、补丁状态、`fapb.cfg` 越界值、WER 崩溃转储 |
+| `scripts/fapb_abpb_setup.ps1` | 让 FAPB 与 ABPB 共存，`-Mode abpb\|fapb` |
+| `scripts/abpb_compat.py` | 修 ABPB 的 BOT 检测表，让它认得出 FAPB |
 
 ```powershell
 # 只体检，不改任何东西
@@ -180,6 +202,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -NoDllPatch
 # 只打/撤补丁
 python .\scripts\fapb_patch.py --dll "...\fapb.dll" --apply
 python .\scripts\fapb_patch.py --dll "...\fapb.dll" --revert
+
+# ABPB 守卫补丁
+python .\scripts\abpb_compat.py --dll "...\addons\ABPB\bin\ABPB.dll" --apply
+python .\scripts\abpb_compat.py --dll "...\addons\ABPB\bin\ABPB.dll" --revert
 ```
 
 `doctor.py` 输出示例：
@@ -230,16 +256,20 @@ fapb-kickfix/
 ├─ CHANGELOG.md
 ├─ LICENSE
 ├─ docs/
-│  └─ diagnosis.md          完整取证：转储、寄存器、PE、指令流
+│  ├─ diagnosis.md          完整取证：转储、寄存器、PE、指令流
+│  └─ abpb-compat.md        ABPB 检测表分析 + 两种共存模式
 └─ scripts/
    ├─ install.ps1
    ├─ restore.ps1
    ├─ fapb_patch.py
+   ├─ abpb_compat.py
+   ├─ fapb_abpb_setup.ps1
    └─ doctor.py
 ```
 
-> 本仓库**不包含** `fapb.dll` 本体。FAPB 是 YaPB 2.55b 的改名分支（YaPB 为 GPL），
-> 重新分发二进制请遵守其许可证并保留原作者署名。这里只放差异补丁与工具。
+> 本仓库**不包含** `fapb.dll` / `ABPB.dll` 本体。FAPB 是 YaPB 2.55b 的改名分支、
+> ABPB 是 AiBo 4.3.3 的改名分支（均为 GPL 系），重新分发二进制请遵守其许可证并保留原作者署名。
+> 这里只放差异补丁与工具。
 
 ---
 

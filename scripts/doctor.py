@@ -25,11 +25,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fapb_patch as F  # noqa: E402
 
 BOT_CORE_RE = re.compile(
-    r"^\s*win32\s+addons[\\/](yapb|sypb|podbot|ebot|csbot_enabler|fapb)[\\/]", re.I)
+    r"^\s*win32\s+addons[\\/](yapb|sypb|podbot|ebot|csbot_enabler|fapb|ABPB)[\\/]", re.I)
 AMXX_RE = re.compile(r"^\s*win32\s+addons[\\/]amxmodx[\\/]dlls[\\/](amxmodx_mm|amxmodx_bl_mm)\.dll", re.I)
 
 CVAR_CHECKS = {
-    "fb_followuser": (0, 1, "0/1 或玩家序号; 99 是无效值"),
+    "fb_followuser": (0, 32, "0..32 (出厂值 2)"),
     "fb_quota": (0, 32, "0..32"),
     "fb_autovacate": (0, 1, "0/1"),
     "fb_followpercent": (0, 100, "0..100"),
@@ -98,6 +98,26 @@ def read_cfg(game: str) -> dict:
     return {}
 
 
+def read_abpb_cfg(game: str) -> dict:
+    p = os.path.join(game, "cstrike", "addons", "ABPB", "conf", "ABPB.cfg")
+    out = {}
+    if not os.path.isfile(p):
+        return out
+    with open(p, "r", encoding="latin-1", errors="replace") as f:
+        for ln in f:
+            m = re.match(r'^\s*(abpb_[a-z0-9_]+)\s+"?([^"\s]*)"?', ln, re.I)
+            if m:
+                out[m.group(1).lower()] = m.group(2)
+    return out
+
+
+def _num(d: dict, key: str):
+    try:
+        return float(d.get(key, "nan"))
+    except (TypeError, ValueError):
+        return float("nan")
+
+
 def scan_dumps(limit: int = 12):
     folder = os.path.join(os.environ.get("LOCALAPPDATA", ""), "CrashDumps")
     rows = []
@@ -157,11 +177,31 @@ def main(argv=None):
         problems += 1
     else:
         bots, amxx, _ = parsed
+        is_pair = (len(bots) == 2
+                   and any("fapb" in b.lower() for b in bots)
+                   and any("abpb" in b.lower() for b in bots))
         if not bots:
             print("    !! 没有启用任何 Bot 核心 (FAPB 未加载?)")
             problems += 1
         elif len(bots) == 1:
             print("    OK  只有一个 Bot 核心: %s" % bots[0])
+        elif is_pair:
+            # FAPB + ABPB coexistence: allowed, but only one side may fill.
+            acfg = read_abpb_cfg(game)
+            fcfg = read_cfg(game)
+            fq = _num(fcfg, "fb_quota")
+            aq = _num(acfg, "abpb_quota")
+            print("    OK  共存模式: FAPB + ABPB 同时加载 (只允许一方补位)")
+            print("         fb_quota=%s  abpb_quota=%s  abpb_compat_auto=%s"
+                  % (fcfg.get("fb_quota", "?"), acfg.get("abpb_quota", "?"),
+                     acfg.get("abpb_compat_auto", "?")))
+            if fq > 0 and aq > 0:
+                print("    !! 两边 quota 都 > 0，会抢 edict 并可能崩溃")
+                print("       -> 运行 fapb_abpb_setup.ps1 -Mode abpb|fapb")
+                problems += 1
+            else:
+                owner = "FAPB" if fq > 0 else ("ABPB" if aq > 0 else "无")
+                print("         补位方: %s" % owner)
         else:
             print("    !! 同时加载了 %d 个 Bot 核心 (FAPB 会随机/必然崩溃):" % len(bots))
             for b in bots:
@@ -194,7 +234,29 @@ def main(argv=None):
         problems += 1
     print()
 
-    # 3. config
+    # 2b. ABPB (optional)
+    abpb_dll = os.path.join(game, "cstrike", "addons", "ABPB", "bin", "ABPB.dll")
+    if os.path.isfile(abpb_dll):
+        print("[2b] ABPB.dll")
+        try:
+            import abpb_compat as A
+            st = A.report(abpb_dll)
+            print("    state  : %s" % st["state"])
+            print("    sha256 : %s" % st["sha256"])
+            if st["state"] == "pristine":
+                print("    -> 守卫仍查 fapb_quota/fapb_version，认不出 FAPB"
+                      "（只有 -Mode fapb 需要打补丁）")
+            elif st["state"] == "patched":
+                print("    -> 守卫已改查 fb_quota/fb_version，能认出 FAPB")
+            else:
+                print("    !! 未知状态，可能被其它工具改过")
+                problems += 1
+            for p in st.get("problems", []):
+                print("    !! %s" % p)
+        except Exception as e:
+            print("    !! %s" % e)
+            problems += 1
+        print()
     print("[3] fapb.cfg 关键参数")
     cfg = read_cfg(game)
     if not cfg:
