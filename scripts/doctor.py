@@ -5,7 +5,7 @@ doctor.py - diagnose a CS 1.6 / FAPB installation.
 
 Checks
   1. Metamod plugins.ini  -> how many bot cores are active (must be exactly one)
-  2. fapb.dll             -> crash-patch state
+  2. fapb.dll             -> released / rebuilt / legacy-patched state
   3. fapb.cfg             -> obviously out-of-range values
   4. WER crash dumps      -> confirm the 0x18173 signature
 
@@ -61,8 +61,19 @@ def detect_game_dir(explicit: str = "") -> str:
     except ImportError:
         pass
     for c in cands:
-        if c and os.path.isfile(os.path.join(c, "hl.exe")):
+        if not c:
+            continue
+        if os.path.isfile(os.path.join(c, "hl.exe")):
             return os.path.abspath(c)
+        # Common repack layout: <root>/<same name>/hl.exe
+        if os.path.isdir(c):
+            try:
+                for name in sorted(os.listdir(c)):
+                    sub = os.path.join(c, name)
+                    if os.path.isfile(os.path.join(sub, "hl.exe")):
+                        return os.path.abspath(sub)
+            except OSError:
+                pass
     return ""
 
 
@@ -191,6 +202,7 @@ def main(argv=None):
             fcfg = read_cfg(game)
             fq = _num(fcfg, "fb_quota")
             aq = _num(acfg, "abpb_quota")
+            compat = _num(acfg, "abpb_compat_auto")
             print("    OK  共存模式: FAPB + ABPB 同时加载 (只允许一方补位)")
             print("         fb_quota=%s  abpb_quota=%s  abpb_compat_auto=%s"
                   % (fcfg.get("fb_quota", "?"), acfg.get("abpb_quota", "?"),
@@ -199,9 +211,21 @@ def main(argv=None):
                 print("    !! 两边 quota 都 > 0，会抢 edict 并可能崩溃")
                 print("       -> 运行 fapb_abpb_setup.ps1 -Mode abpb|fapb")
                 problems += 1
+            elif fq == 0 and aq == 0:
+                print("    !! 两边 quota 都是 0，不会自动补位 (只能手动 add)")
+                problems += 1
             else:
-                owner = "FAPB" if fq > 0 else ("ABPB" if aq > 0 else "无")
+                owner = "FAPB" if fq > 0 else "ABPB"
                 print("         补位方: %s" % owner)
+                if owner == "ABPB" and aq > 0:
+                    print("         注意: ABPB 运行时会把 abpb_quota 夹到 maxplayers"
+                          "（cfg 里的 31 不会超过服务器人数上限）")
+                if owner == "ABPB" and compat == 1:
+                    print("    !! abpb_compat_auto=1 且 ABPB 已能检测 FAPB，"
+                          "ABPB 会自动让位")
+                    print("       -> 改为 abpb_compat_auto 0 (abpb 主导) "
+                          "或把补位交给 FAPB")
+                    problems += 1
         else:
             print("    !! 同时加载了 %d 个 Bot 核心 (FAPB 会随机/必然崩溃):" % len(bots))
             for b in bots:
@@ -220,15 +244,30 @@ def main(argv=None):
         dll = F.find_dll(game)
         st = F.state(dll)
         print("    %s" % dll)
-        print("    state  : %s   (bytes %s @ RVA %#x)" % (st["state"], st["bytes"], F.PATCH_RVA))
+        print("    state  : %s   (bytes %s @ RVA %#x)"
+              % (st["state"], st["bytes"], F.PATCH_RVA))
         print("    sha256 : %s" % st["sha256"])
-        if st["state"] == "pristine":
-            print("    -> 未打补丁。踢 BOT 时仍可能闪退; 运行 install.ps1")
-        elif st["state"] == "patched":
-            print("    -> 已打补丁: 删除 Bot 不再访问 gpGlobals。")
-        else:
-            print("    !! 未知字节, 可能被其他工具改过")
+        if st["state"] == "rebuilt":
+            print("    OK  重建版 DLL，未打 5 字节补丁（推荐状态）。")
+        elif st["state"] == "rebuilt-legacy-patched":
+            print("    !! 重建版 DLL 上打了 5 字节补丁 —— 踢 BOT 会崩。")
+            print("       -> python scripts\\fapb_patch.py --dll \"%s\" --revert" % dll)
+            print("       或重跑 fapb_rebuild.py --install 覆盖。")
             problems += 1
+        elif st["state"] == "released":
+            print("    !! 上游发布版 DLL：导入表损坏（badf load / 堆损坏）。")
+            print("       -> python scripts\\fapb_rebuild.py --download --install"
+                  " --game-dir \"%s\"" % game)
+            print("       旧版 5 字节补丁只是绕过踢 BOT 崩溃，不是根治。")
+            problems += 1
+        elif st["state"] == "released-legacy-patched":
+            print("    旧版方案：发布版 DLL + 5 字节补丁（可踢 BOT，但底层仍是损坏的 DLL）。")
+            print("    建议重建：python scripts\\fapb_rebuild.py --download --install")
+        elif st["state"] == "unknown":
+            print("    !! 未知字节/版本, 可能被其他工具改过")
+            problems += 1
+        else:
+            print("    -> %s" % st["state"])
     except Exception as e:
         print("    !! %s" % e)
         problems += 1
@@ -241,15 +280,16 @@ def main(argv=None):
         try:
             import abpb_compat as A
             st = A.report(abpb_dll)
+            print("    build  : %s" % st.get("label", "unknown"))
             print("    state  : %s" % st["state"])
             print("    sha256 : %s" % st["sha256"])
             if st["state"] == "pristine":
-                print("    -> 守卫仍查 fapb_quota/fapb_version，认不出 FAPB"
-                      "（只有 -Mode fapb 需要打补丁）")
+                print("    -> 守卫仍查 fapb_quota/fapb_version，认不出 FAPB")
+                print("       （abpb 主导时可不开守卫，但 fapb 主导必须打补丁）")
             elif st["state"] == "patched":
                 print("    -> 守卫已改查 fb_quota/fb_version，能认出 FAPB")
             else:
-                print("    !! 未知状态，可能被其它工具改过")
+                print("    !! 未知状态/版本，可能被其它工具改过或 ABPB 已升级")
                 problems += 1
             for p in st.get("problems", []):
                 print("    !! %s" % p)
@@ -275,6 +315,10 @@ def main(argv=None):
             except ValueError:
                 continue
             if not (lo <= v <= hi):
+                if k == "fb_followuser" and v == 99:
+                    # Pre-existing repack value; unrelated to the kick crash.
+                    print("    -- %s = 99 (repack 预置值，已知噪音，忽略)" % k)
+                    continue
                 print("    !! %s = %s 超出合理范围 (%s)" % (k, cfg[k], desc))
                 problems += 1
     print()

@@ -1,5 +1,10 @@
 # 取证记录：fapb.dll+0x18173 读访问冲突
 
+> **2026-11-16（1.2.0）更新**：本文记录的是“踢 BOT 为什么走到这条指令”的取证，
+> 仍然有效。更底层的根因是**发布版 DLL 的导入表损坏**（IAT 里是转储进程的旧地址），
+> 5 字节补丁只是绕过症状。正式修复是用 `scripts/fapb_rebuild.py` 重建 DLL；详见
+> [fapb-dll-repair.md](fapb-dll-repair.md)。重建版**不要**再打本文的 5 字节补丁。
+
 本文是结论的依据，记录**怎么定位**到那条指令，以及为什么认为补丁是安全的。
 环境：Windows 11（WOW64），CS 1.6 repack `Counter Strike 8684(多BOT版)`，Metamod 1.19，AMXX 1.8.1。
 

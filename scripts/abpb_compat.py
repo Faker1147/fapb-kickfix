@@ -13,10 +13,6 @@ system at map start.  It looks for these cvar names (plain ASCII, in .rdata):
     podbot_quota podbot_version pb_quota pb_version zbot_quota zbot_version
     zb_quota zb_version realbot_quota realbot_version
 
-Each name sits in an 8-byte {const char *name; uint32 len;} entry, e.g.
-
-    0x27D778: 0x1027EE34 "fapb_quota"   0x27D77C: 0x0000000A (len 10)
-
 But FAPB 1.6 (renamed YaPB 2.55b) registers its cvars as ``fb_*``, not
 ``fapb_*``: it has ``fb_quota`` and ``fb_version``.  ABPB therefore never
 detects FAPB, both managers stay enabled, and the server can run out of
@@ -32,8 +28,15 @@ actually has.  Same-or-shorter length, no size change, no relocation touched:
 
 Only these 4 spots are modified (2 strings + 2 length dwords).
 
-The patcher is pinned to the ABPB 4.3.3 build from the official zip
-(SHA-256 ff61716f...), refuses to touch anything else, and can --revert.
+Supported builds
+----------------
+Every build is pinned by its pristine and patched SHA-256.  Unknown builds are
+refused on purpose; add a new entry to ``BUILDS`` after verifying the offsets.
+
+    ABPB 4.3.3-abpb.1   FF61716F...CD776 -> 675A62AD...669ED
+    ABPB 4.3.3-abpb.2   6CE76D06...ABBD  -> F2750780...A254D
+
+The patcher can --revert and --dry-run.
 """
 
 from __future__ import annotations
@@ -52,15 +55,33 @@ from fapb_patch import PE  # noqa: E402  (shared PE header helper)
 
 DLL_REL = os.path.join("cstrike", "addons", "ABPB", "bin", "ABPB.dll")
 
-SHA256_PRISTINE = "ff61716f5eb77d17e27d9dc3e696b0944cad1c17ce3a520828e37fab226cd776"
+# Each build uses the same 22-byte transformation, but the file offsets moved
+# between abpb.1 and abpb.2.  Keep the replacement order: quota string first,
+# then version string (both are 11 bytes apart in .rdata).
+BUILDS = {
+    "ff61716f5eb77d17e27d9dc3e696b0944cad1c17ce3a520828e37fab226cd776": {
+        "label": "ABPB 4.3.3-abpb.1 Windows x86",
+        "patched": "675a62ad455240c41c50cd2207519c7367a1b7b1043656d9e4d664bff92669ed",
+        "edits": [
+            (0x27D834, b"fapb_quota",   b"fb_quota\0\0",   "name: fapb_quota -> fb_quota"),
+            (0x27D77C, struct.pack("<I", 0x0A), struct.pack("<I", 0x08), "len: 10 -> 8"),
+            (0x27D83F, b"fapb_version", b"fb_version\0\0", "name: fapb_version -> fb_version"),
+            (0x27D784, struct.pack("<I", 0x0C), struct.pack("<I", 0x0A), "len: 12 -> 10"),
+        ],
+    },
+    "6ce76d06fcfd3198b1d213bb2576dcceaec432c990cd7cdbf00688df5e26abbd": {
+        "label": "ABPB 4.3.3-abpb.2 Windows x86",
+        "patched": "f2750780b14655126f0142d691c6ae5c362eaefa12a9e8a216f082d1e80a254d",
+        "edits": [
+            (0x27D8F4, b"fapb_quota",   b"fb_quota\0\0",   "name: fapb_quota -> fb_quota"),
+            (0x27D83C, struct.pack("<I", 0x0A), struct.pack("<I", 0x08), "len: 10 -> 8"),
+            (0x27D8FF, b"fapb_version", b"fb_version\0\0", "name: fapb_version -> fb_version"),
+            (0x27D844, struct.pack("<I", 0x0C), struct.pack("<I", 0x0A), "len: 12 -> 10"),
+        ],
+    },
+}
 
-# (file offset, old bytes, new bytes, what)
-EDITS = [
-    (0x27D834, b"fapb_quota",   b"fb_quota\0\0",   "name: fapb_quota -> fb_quota"),
-    (0x27D77C, struct.pack("<I", 0x0A), struct.pack("<I", 0x08), "len: 10 -> 8"),
-    (0x27D83F, b"fapb_version", b"fb_version\0\0", "name: fapb_version -> fb_version"),
-    (0x27D784, struct.pack("<I", 0x0C), struct.pack("<I", 0x0A), "len: 12 -> 10"),
-]
+PATCHED_TO_PRISTINE = {v["patched"]: k for k, v in BUILDS.items()}
 
 # sanity: entries live in .rdata
 EXPECT_SECTION = ".rdata"
@@ -89,30 +110,87 @@ def section_of(pe: PE, off: int):
     return None
 
 
+def _guess_build(data: bytes):
+    """Return (pristine_sha, build) based on file content, or (None, None)."""
+    sha = sha256_bytes(data)
+    if sha in BUILDS:
+        return sha, BUILDS[sha]
+    if sha in PATCHED_TO_PRISTINE:
+        pristine = PATCHED_TO_PRISTINE[sha]
+        return pristine, BUILDS[pristine]
+
+    # Fall back to byte-level recognition (e.g. one edit partially applied).
+    for pristine, build in BUILDS.items():
+        old_hits = 0
+        new_hits = 0
+        for off, old, new, _ in build["edits"]:
+            cur = data[off:off + max(len(old), len(new))]
+            if cur == old:
+                old_hits += 1
+            elif cur == new:
+                new_hits += 1
+        if old_hits and new_hits:
+            return pristine, build
+        if new_hits == len(build["edits"]):
+            return pristine, build
+        if old_hits == len(build["edits"]):
+            return pristine, build
+    return None, None
+
+
 def analyse(data: bytes) -> dict:
     pe = PE(data)
-    state = "pristine"
+    pristine, build = _guess_build(data)
+    sha = sha256_bytes(data)
+
+    if build is None:
+        return {
+            "state": "unknown",
+            "label": None,
+            "sha256": sha,
+            "problems": [
+                "unsupported ABPB.dll (sha256 %s)." % sha,
+                "Known builds:",
+                *["  %s  %s" % (k, v["label"]) for k, v in BUILDS.items()],
+                "Update BUILDS in abpb_compat.py after verifying the new offsets.",
+            ],
+        }
+
     problems = []
-    for off, old, new, what in EDITS:
-        cur = data[off:off + len(old)]
+    patched_hits = 0
+    pristine_hits = 0
+    for off, old, new, what in build["edits"]:
+        cur = data[off:off + max(len(old), len(new))]
         sec = section_of(pe, off)
         if sec != EXPECT_SECTION:
             problems.append("%s: offset %#x is in %s, expected %s"
                             % (what, off, sec, EXPECT_SECTION))
-        if cur == new:
-            continue
-        if cur != old:
-            state = "unknown"
+        if len(old) != len(new):
+            problems.append("%s: replacement changes length (%d -> %d)"
+                            % (what, len(old), len(new)))
+        if cur[:len(new)] == new:
+            patched_hits += 1
+        elif cur[:len(old)] == old:
+            pristine_hits += 1
+        else:
             problems.append("%s: unexpected bytes %s at %#x"
                             % (what, cur.hex().upper(), off))
-            continue
-        state = "pristine" if state != "unknown" else state
-    if state == "pristine" and problems:
+
+    n = len(build["edits"])
+    if patched_hits == n and not problems:
+        state = "patched"
+    elif pristine_hits == n and not problems:
+        state = "pristine"
+    else:
         state = "unknown"
-    if state == "pristine":
-        if all(data[off:off + len(new)] == new for off, old, new, _ in EDITS):
-            state = "patched"
-    return {"state": state, "problems": problems, "sha256": sha256_bytes(data)}
+
+    return {
+        "state": state,
+        "label": build["label"],
+        "pristine_sha256": pristine,
+        "sha256": sha,
+        "problems": problems,
+    }
 
 
 def apply_patch(path: str, dry_run: bool = False) -> dict:
@@ -120,16 +198,14 @@ def apply_patch(path: str, dry_run: bool = False) -> dict:
     info = analyse(bytes(data))
     if info["state"] == "patched":
         return {**info, "changed": False, "state": "already-patched"}
-    if info["problems"]:
+    if info["state"] != "pristine" or info["problems"]:
         raise ValueError("refusing to patch:\n  " + "\n  ".join(info["problems"]))
-    if info["sha256"] != SHA256_PRISTINE:
-        raise ValueError(
-            "unexpected ABPB.dll (sha256 %s, expected %s).\n"
-            "This build is not the ABPB 4.3.3 package this patch was written for."
-            % (info["sha256"], SHA256_PRISTINE))
+    build = BUILDS[info["pristine_sha256"]]
     if dry_run:
         return {**info, "changed": True, "state": "would-patch"}
-    for off, old, new, what in EDITS:
+    for off, old, new, what in build["edits"]:
+        if bytes(data[off:off + len(old)]) != old:
+            raise RuntimeError("pre-flight check failed for %s at %#x" % (what, off))
         data[off:off + len(new)] = new
     tmp = path + ".tmp"
     open(tmp, "wb").write(bytes(data))
@@ -138,7 +214,7 @@ def apply_patch(path: str, dry_run: bool = False) -> dict:
     out = analyse(bytes(data))
     if out["state"] != "patched":
         raise RuntimeError("post-patch verification failed: %s" % out)
-    return {"changed": True, "state": "patched", "sha256": out["sha256"]}
+    return {"changed": True, **out, "state": "patched"}
 
 
 def revert_patch(path: str) -> dict:
@@ -146,17 +222,22 @@ def revert_patch(path: str) -> dict:
     info = analyse(bytes(data))
     if info["state"] == "pristine":
         return {**info, "changed": False, "state": "already-pristine"}
-    if info["state"] != "patched":
+    if info["state"] != "patched" or info["problems"]:
         raise ValueError("cannot revert: file is not in a known patched state (%s)"
                          % info["state"])
-    for off, old, new, what in EDITS:
-        data[off:off + len(new)] = old
+    build = BUILDS[info["pristine_sha256"]]
+    for off, old, new, what in build["edits"]:
+        if bytes(data[off:off + len(new)]) != new:
+            raise RuntimeError("pre-flight check failed for %s at %#x" % (what, off))
+        data[off:off + len(old)] = old
     tmp = path + ".tmp"
     open(tmp, "wb").write(bytes(data))
     shutil.copystat(path, tmp)
     os.replace(tmp, path)
     out = analyse(bytes(data))
-    return {"changed": True, "state": "reverted", "sha256": out["sha256"]}
+    if out["state"] != "pristine":
+        raise RuntimeError("post-revert verification failed: %s" % out)
+    return {"changed": True, **out, "state": "reverted"}
 
 
 def report(path: str) -> dict:
@@ -200,6 +281,7 @@ def main(argv=None):
         print(json.dumps(res, indent=2, ensure_ascii=False))
     else:
         print("ABPB.dll : %s" % dll)
+        print("build    : %s" % res.get("label", "unknown"))
         print("state    : %s" % res.get("state"))
         if "sha256" in res:
             print("sha256   : %s" % res["sha256"])

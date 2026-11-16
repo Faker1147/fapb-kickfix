@@ -41,10 +41,19 @@ fb_autovacate  fb_botbuy  fb_chat ... fb_quota ... fb_version ...
 
 | 位置 | 原内容 | 改为 |
 | --- | --- | --- |
-| 文件 `0x27D834` | `"fapb_quota"` | `"fb_quota"` + `00 00` |
-| 文件 `0x27D77C` | 长度 `0x0A` | `0x08` |
-| 文件 `0x27D83F` | `"fapb_version"` | `"fb_version"` + `00 00` |
-| 文件 `0x27D784` | 长度 `0x0C` | `0x0A` |
+| `fapb_quota` 字符串 | `"fapb_quota"` | `"fb_quota"` + `00 00` |
+| `fapb_quota` 长度 | `0x0A` | `0x08` |
+| `fapb_version` 字符串 | `"fapb_version"` | `"fb_version"` + `00 00` |
+| `fapb_version` 长度 | `0x0C` | `0x0A` |
+
+两个构建的文件偏移不同：
+
+| 项 | abpb.1 | abpb.2 |
+| --- | --- | --- |
+| `fapb_quota` 字符串 | `0x27D834` | `0x27D8F4` |
+| `fapb_quota` 长度 dword | `0x27D77C` | `0x27D83C` |
+| `fapb_version` 字符串 | `0x27D83F` | `0x27D8FF` |
+| `fapb_version` 长度 dword | `0x27D784` | `0x27D844` |
 
 长度字段必须同步改：检测代码是把 `{ptr,len}` 当 `string_view` 传递/哈希的
 （源码里能看到 `mov [esp+8], <ptr>` / `mov [esp+0xC], <len>` 的成对立即数），
@@ -52,10 +61,13 @@ fb_autovacate  fb_botbuy  fb_chat ... fb_quota ... fb_version ...
 
 改动一共 **22 个字节**，全在 `.rdata` 的两段字符串和两个长度 dword 里：
 
-- 原版 SHA-256：`ff61716f5eb77d17e27d9dc3e696b0944cad1c17ce3a520828e37fab226cd776`
-  （与包内 `BUILD-INFO.txt` 一致）
-- 补丁后 SHA-256：`675a62ad455240c41c50cd2207519c7367a1b7b1043656d9e4d664bff92669ed`
-- 工具会校验原版哈希、校验每个字节、跑 `--dry-run`，并可 `--revert` 精确还原
+| 构建 | 原版 SHA-256 | 补丁后 SHA-256 |
+| --- | --- | --- |
+| ABPB 4.3.3-abpb.1 | `ff61716f5eb77d17e27d9dc3e696b0944cad1c17ce3a520828e37fab226cd776` | `675a62ad455240c41c50cd2207519c7367a1b7b1043656d9e4d664bff92669ed` |
+| ABPB 4.3.3-abpb.2 | `6ce76d06fcfd3198b1d213bb2576dcceaec432c990cd7cdbf00688df5e26abbd` | `f2750780b14655126f0142d691c6ae5c362eaefa12a9e8a216f082d1e80a254d` |
+
+工具会校验原版哈希、校验每个字节、跑 `--dry-run`，并可 `--revert` 精确还原。
+未知构建会被拒绝（不会盲改偏移）。
 
 之所以改 ABPB 而不是改 FAPB：`fb_quota` 变 `fapb_quota` 是**变长**（8→10），
 字符串池里没有余量，硬改会破坏相邻数据；而 ABPB 那边是**变短**，天然安全。
@@ -70,12 +82,25 @@ fb_autovacate  fb_botbuy  fb_chat ... fb_quota ... fb_version ...
 | `abpb_compat_auto` | `0`（不要被 FAPB 触发让位） | `1`（让位给 FAPB） |
 | `fb_quota` | 强制 `0` | 保持 |
 | `fb_autovacate` | `0` | `0` |
-| 是否需要打 ABPB.dll | 不需要 | 需要（守卫才会认 FAPB） |
+| 是否需要打 ABPB.dll | 可选（建议打，方便识别/切换模式） | 需要（守卫才会认 FAPB） |
 
 `-Mode abpb` 是"新 BOT 主导"：ABPB 用它的 Human Copycat / 学习 / 聊天，FAPB 只作为
-备选保留在 `meta list` 里，不补位也不踢人。
+备选保留在 `meta list` 里，不补位也不踢人。`-Mode abpb` 下保持 `abpb_compat_auto 0`，
+避免打了守卫补丁的 ABPB 把空闲的 FAPB 误判成"正在管理的 BOT"而自动让位。
 `-Mode fapb` 是"老 BOT 主导"：ABPB 被完全让位（quota 0），守卫补丁让它即使
 `compat_auto 1` 也不会误解锁。
+
+FAPB 侧建议先跑 `fapb_rebuild.py` 换成重建版 DLL；1.2.0 起 `fapb_abpb_setup.ps1` 默认
+只检查、不再自动打 5 字节补丁。需要重建时加 `-RebuildFapb`：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\fapb_abpb_setup.ps1 `
+  -GameDir "D:\CS1.6" -Mode abpb -RebuildFapb
+```
+
+> **quota 会被夹到 maxplayers**：`ABPB.cfg` 里写 `abpb_quota "31"` 时，运行时实际值
+> 不会超过服务器人数上限。实测 `+maxplayers 8/12/20` 对应运行时 `abpb_quota 8/12/20`。
+> 这是 ABPB 的正常行为，不是配置没生效。
 
 ## 4. 用法
 
@@ -115,5 +140,7 @@ fapb version
 - 两套 BOT 同时加载意味着两套引擎 Hook（`ClientCommand` / `SayText` / `ServerActivate` 等）。
   ABPB 官方文档也只承诺"可同时安装、单方管理"。如果出现菜单错乱、说话重复之类的怪现象，
   退回 `plugins.ini` 只留一套（上一版 `install.ps1` 做的就是这个）。
-- 本文的偏移基于 **ABPB 4.3.3-abpb.1 Windows x86**（`BUILD-INFO.txt` 里的
-  `ABPB.dll SHA256 ff61716f...`）。其它版本偏移不同，不要套用。
+- 本文的偏移覆盖 **ABPB 4.3.3-abpb.1** 和 **abpb.2** 两个构建；两者的补丁后哈希
+  分别是 `675a62ad…669ed` / `f2750780…254d`。其它版本偏移不同，不要套用。
+- 1.2.0 起 FAPB 使用重建版 DLL（`9afdaa67…8c96`），**不要**再给它打 0x1811D 的
+  5 字节补丁；重建版 + 补丁会踢 BOT 崩溃（见 `docs/fapb-dll-repair.md`）。

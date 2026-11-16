@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.2.0 — 2026-11-16
+
+找到并修复了 1.0/1.1 没有触及的根因：**FAPB 1.6 发布版 `fapb.dll` 的导入表是坏的**。
+5 字节补丁降级为兼容选项，重建 DLL 才是正式修复。
+
+### 修复
+- **`fapb.dll` 导入表**：发布版 DLL（`606E7A6A…3553`，643072 字节）是 UPX 转储产物，
+  PE 导入目录只描述 UPX stub；真实代码使用的 84 个 `kernel32` 导入槽（IAT，RVA `0x5A000`）
+  仍保存着转储进程的旧地址。加载器不会修正它们，导致 `badf load`、堆损坏和踢 BOT 崩溃。
+- **`scripts/fapb_rebuild.py`（新增）**：用固定上游素材重建正常 PE：
+  - 固定 `Faker1147/FAPB@4fae46026d296946c196d4c1bcc25ead3036a9bb`；
+  - 校验 `yapb.dll` / `yapb_b1.bin` / `yapb_b2.bin` 的 SHA-256；
+  - 从两份转储恢复 **9796 条重定位**；
+  - 新建 `.idata`：1 个 `KERNEL32.dll` 描述符、84 条 hint/name、`FirstThunk=0x5A000`；
+  - 输出 SHA-256 固定为 `9AFDAA67…8C96`（645120 字节），不符则报错；
+  - 支持 `--download`、`--artifacts`、`--install`（自动备份原 DLL）。
+- **5 字节补丁废弃**：`fapb_patch.py` 现在识别四种状态（released / released-legacy-patched /
+  rebuilt / rebuilt-legacy-patched），在重建版上**拒绝** `--apply`，并支持 `--revert`。
+  重建版 + 旧补丁（`9F2EBB5A…1CAD`）实测踢 BOT 时崩在 `hl.exe` `EIP 0x005381E0`。
+- **`install.ps1`**：默认不再给 DLL 打 5 字节补丁；新增 `-RebuildDll`、`-ArtifactsDir`、
+  `-LegacyPatch`。检测到重建版误打补丁时会自动 revert。
+- **`fapb_abpb_setup.ps1`**：默认只检查 DLL，不再自动打补丁；新增 `-RebuildFapb`、
+  `-ArtifactsDir`、`-LegacyFapbPatch`；`-NoFapbPatch` 仍保留为显式跳过。
+- **`doctor.py`**：区分发布版 / 重建版 / 误打补丁，给出对应修复命令；不再把 repack 预置的
+  `fb_followuser 99` 计入问题。
+
+### 新增
+- `docs/fapb-dll-repair.md` — 导入表诊断、重建布局、哈希、ABPB 偏移、quota 夹取说明。
+- `abpb_compat.py` 支持 **ABPB 4.3.3-abpb.1** 和 **abpb.2** 两个构建
+  （abpb.2 补丁后 `F2750780…A254D`）。
+- ABPB 运行时 `abpb_quota` 会被夹到 `maxplayers` 的说明（实测 8 / 12 / 20）。
+
+### 变更
+- README 重写：以“重建导入表”为主线，5 字节补丁移到历史/兼容章节。
+- `fapb_patch.py` 的 `--apply` 现在会打印废弃警告；重建版直接拒绝。
+- 新增 `.gitignore` 条目：`tools/artifacts/`、`dist/`。
+
+### 验证
+- 重建版在 HLDS 中：`meta list` 显示 `FAPB RUN v2.55b`；`fapb add` + `fapb kickall` 不崩。
+- 重建版与 ABPB 4.3.3-abpb.2 共存：`fapb kickall`、ABPB 正常补位均通过。
+- `doctor.py`：`state: rebuilt`，结论“一切正常”。
+
 ## 1.1.0 — 2026-11-11
 
 让 FAPB 与 ABPB 4.3.3 共存。

@@ -1,13 +1,21 @@
 <#
 .SYNOPSIS
-    Fix the CS 1.6 / FAPB "kick bot -> crash" bug (fapb.dll+0x18173).
+    Fix the CS 1.6 / FAPB "kick bot -> crash" bug.
 
 .DESCRIPTION
     1. Backs up plugins.ini and fapb.dll.
-    2. Rewrites cstrike/addons/metamod/plugins.ini so exactly ONE bot core
-       (FAPB) is active.  YAPB / SYPB / PODBot / EBot / CSBot Enabler are
-       commented out but kept on disk.
-    3. Applies the 5-byte crash patch to fapb.dll (see docs/diagnosis.md).
+    2. Rewrites cstrike/addons/metamod/plugins.ini so FAPB is active and the
+       other bot cores (YAPB / SYPB / PODBot / EBot / CSBot Enabler) are
+       commented out.  ABPB lines are left untouched.
+    3. Inspects fapb.dll:
+         rebuilt        -> OK, leave it alone (recommended)
+         rebuilt+patch  -> automatically revert the harmful 5-byte patch
+         released       -> warn; rebuild with -RebuildDll (recommended) or
+                           opt in to the deprecated patch with -LegacyPatch
+
+    The 5-byte 0x1811D patch is deprecated.  It hides the kick crash on the
+    released DLL, but makes the rebuilt DLL crash.  The real fix is the
+    rebuilt import table from scripts/fapb_rebuild.py.
 
     Close the game first.
 
@@ -15,19 +23,35 @@
     CS 1.6 root folder (the one that contains hl.exe).
     Defaults to $env:FAPB_GAME_DIR, then the registry.
 
+.PARAMETER RebuildDll
+    Run scripts/fapb_rebuild.py --download --install.  This downloads the
+    pinned upstream artifacts (or uses -ArtifactsDir), verifies the output
+    hash and replaces fapb.dll.  Requires internet on first run.
+
+.PARAMETER ArtifactsDir
+    Local folder containing yapb.dll / yapb_b1.bin / yapb_b2.bin, used with
+    -RebuildDll.  Defaults to tools\artifacts.
+
+.PARAMETER LegacyPatch
+    Apply the deprecated 5-byte patch to a released DLL.  Refused on rebuilt
+    DLLs.  Use this only if you cannot rebuild for some reason.
+
 .PARAMETER NoDllPatch
-    Only fix plugins.ini and leave fapb.dll untouched.
+    Do not inspect or touch fapb.dll at all (legacy flag).
 
 .PARAMETER WhatIf
     Report what would change; write nothing.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\install.ps1
-    powershell -ExecutionPolicy Bypass -File .\install.ps1 -GameDir "D:\Counter Strike 8684(多BOT版)"
+    powershell -ExecutionPolicy Bypass -File .\install.ps1 -RebuildDll
+    powershell -ExecutionPolicy Bypass -File .\install.ps1 -GameDir "D:\Counter Strike 8684(澶欱OT鐗?" -RebuildDll
 #>
 [CmdletBinding()]
 param(
     [string]$GameDir = "",
+    [switch]$RebuildDll,
+    [string]$ArtifactsDir = "",
+    [switch]$LegacyPatch,
     [switch]$NoDllPatch,
     [switch]$WhatIf
 )
@@ -52,11 +76,27 @@ function Find-GameDir {
         } catch { }
     }
     foreach ($d in $cands) {
-        if ($d -and (Test-Path -LiteralPath (Join-Path $d 'hl.exe'))) {
+        if (-not $d) { continue }
+        if (Test-Path -LiteralPath (Join-Path $d 'hl.exe')) {
             return (Resolve-Path -LiteralPath $d).Path
+        }
+        # Common repack layout: <root>\<same name>\hl.exe
+        if (Test-Path -LiteralPath $d) {
+            $hit = Get-ChildItem -LiteralPath $d -Directory -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'hl.exe') } |
+                Select-Object -First 1
+            if ($hit) { return $hit.FullName }
         }
     }
     return ""
+}
+
+function Get-Python {
+    foreach ($c in @('python', 'py')) {
+        $cmd = Get-Command $c -ErrorAction SilentlyContinue
+        if ($cmd) { return $cmd.Source }
+    }
+    return $null
 }
 
 $GameDir = Find-GameDir -Hint $GameDir
@@ -70,6 +110,9 @@ if (-not (Test-Path -LiteralPath (Join-Path $GameDir 'hl.exe'))) {
 }
 if (-not (Test-Path -LiteralPath (Join-Path $GameDir 'cstrike'))) {
     throw "cstrike folder not found under: $GameDir"
+}
+if ($RebuildDll -and $LegacyPatch) {
+    throw "-RebuildDll and -LegacyPatch are mutually exclusive"
 }
 
 Write-Host "Game folder: $GameDir" -ForegroundColor Cyan
@@ -132,33 +175,75 @@ foreach ($line in $lines) {
 }
 
 if (($out.Count -gt 0) -and ($out[$out.Count - 1].Trim() -ne '')) { $out.Add('') }
-$out.Add(';; --- FAPB: the only active bot core (managed by fapb-kickfix) ---')
+$out.Add(';; --- FAPB active (managed by fapb-kickfix; ABPB lines are untouched) ---')
 $out.Add('win32 addons/fapb/dlls/fapb.dll')
 
 if ($WhatIf) {
     Write-Host "[WhatIf] would comment $disabled conflicting line(s) in $plugins" -ForegroundColor Yellow
 } else {
     Set-Content -LiteralPath $plugins -Value $out -Encoding ASCII
-    Write-Host "plugins.ini updated: commented $disabled line(s), FAPB only" -ForegroundColor Green
+    Write-Host "plugins.ini updated: commented $disabled line(s), FAPB enabled" -ForegroundColor Green
 }
 
-# --------------------------------------------------------------- dll patch -
+# ------------------------------------------------------------------- dll ----
+$py = Get-Python
 if ($NoDllPatch) {
-    Write-Host "Skipping DLL patch (-NoDllPatch)" -ForegroundColor DarkGray
-} else {
-    $py = $null
-    foreach ($c in @('python', 'py')) {
-        $cmd = Get-Command $c -ErrorAction SilentlyContinue
-        if ($cmd) { $py = $cmd.Source; break }
-    }
-    if (-not $py) {
-        Write-Warning "python not found - DLL patch skipped. Run: python scripts\fapb_patch.py --apply"
+    Write-Host "Skipping fapb.dll completely (-NoDllPatch)" -ForegroundColor DarkGray
+} elseif (-not $py) {
+    Write-Warning "python not found - cannot inspect/rebuild fapb.dll."
+    Write-Warning "Install Python, then run: python scripts\fapb_rebuild.py --download --install"
+} elseif ($RebuildDll) {
+    $pyArgs = @((Join-Path $scriptRoot 'fapb_rebuild.py'), '--download', '--game-dir', $GameDir)
+    if ($ArtifactsDir) { $pyArgs += @('--artifacts', $ArtifactsDir) }
+    if ($WhatIf) {
+        Write-Host "[WhatIf] would run: $py $($pyArgs -join ' ') --install" -ForegroundColor Yellow
     } else {
-        $patchArgs = @((Join-Path $scriptRoot 'fapb_patch.py'), '--dll', $dll)
-        if ($WhatIf) { $patchArgs += '--dry-run' } else { $patchArgs += '--apply' }
-        & $py @patchArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw "DLL patch failed (exit $LASTEXITCODE)"
+        $pyArgs += '--install'
+        & $py @pyArgs
+        if ($LASTEXITCODE -ne 0) { throw "fapb.dll rebuild failed (exit $LASTEXITCODE)" }
+    }
+} else {
+    $pyArgs = @((Join-Path $scriptRoot 'fapb_patch.py'), '--dll', $dll, '--json')
+    $raw = & $py @pyArgs
+    if ($LASTEXITCODE -ne 0) { throw "fapb_patch.py failed (exit $LASTEXITCODE)" }
+    $st = $raw | ConvertFrom-Json
+    Write-Host "fapb.dll state: $($st.state)  ($($st.sha256))" -ForegroundColor Cyan
+
+    switch ($st.state) {
+        'rebuilt' {
+            Write-Host "  OK: rebuilt DLL, unpatched. Nothing to do." -ForegroundColor Green
+        }
+        'rebuilt-legacy-patched' {
+            Write-Host "  harmful 5-byte patch detected on the rebuilt DLL; reverting..." -ForegroundColor Yellow
+            if ($WhatIf) {
+                Write-Host "[WhatIf] would run: python fapb_patch.py --revert" -ForegroundColor Yellow
+            } else {
+                & $py (Join-Path $scriptRoot 'fapb_patch.py') --dll $dll --revert
+                if ($LASTEXITCODE -ne 0) { throw "patch revert failed (exit $LASTEXITCODE)" }
+            }
+        }
+        'released' {
+            if ($LegacyPatch) {
+                if ($WhatIf) {
+                    Write-Host "[WhatIf] would apply the deprecated 5-byte patch" -ForegroundColor Yellow
+                } else {
+                    & $py (Join-Path $scriptRoot 'fapb_patch.py') --dll $dll --apply
+                    if ($LASTEXITCODE -ne 0) { throw "legacy patch failed (exit $LASTEXITCODE)" }
+                }
+            } else {
+                Write-Host "  released upstream DLL is broken (missing import table)." -ForegroundColor Yellow
+                Write-Host "  Rebuild it (recommended):" -ForegroundColor Yellow
+                Write-Host "    powershell -ExecutionPolicy Bypass -File .\install.ps1 -RebuildDll" -ForegroundColor Yellow
+                Write-Host "  or, if you cannot rebuild, opt in to the deprecated patch:" -ForegroundColor DarkYellow
+                Write-Host "    powershell -ExecutionPolicy Bypass -File .\install.ps1 -LegacyPatch" -ForegroundColor DarkYellow
+            }
+        }
+        'released-legacy-patched' {
+            Write-Host "  legacy patch present on the released DLL; rebuilding is safer." -ForegroundColor Yellow
+            Write-Host "    powershell -ExecutionPolicy Bypass -File .\install.ps1 -RebuildDll" -ForegroundColor Yellow
+        }
+        default {
+            Write-Warning "  unknown fapb.dll build; inspect it with scripts\doctor.py"
         }
     }
 }
@@ -166,9 +251,9 @@ if ($NoDllPatch) {
 # ------------------------------------------------------------------ report --
 Write-Host ""
 Write-Host "Done." -ForegroundColor Cyan
-Write-Host "  1) Make sure no other bot core (YAPB/SYPB/PODBot/EBot) is enabled."
-Write-Host "  2) In game console:  meta list   -> only FAPB should be listed"
-Write-Host "  3) Press V -> 1 -> 4/5 to test kicking bots."
+Write-Host "  1) Make sure no other conflicting bot core is enabled (ABPB coexistence: fapb_abpb_setup.ps1)."
+Write-Host "  2) In game console:  meta list"
+Write-Host "  3) Press V -> 1 -> 4/5 to test kicking bots; check doctor.py afterwards."
 if (-not $WhatIf) {
     Write-Host "  Restore: powershell -ExecutionPolicy Bypass -File .\restore.ps1 -BackupDir `"$backupDir`""
 }
