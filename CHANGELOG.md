@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.2 — 2026-11-17
+
+补充 YAPB 2.9 的恢复文档，不修改任何脚本或默认配置。
+
+### 文档
+- 新增 `docs/yapb-2.9-restore.md`：
+  - 区分 YAPB **2.9（`addons/yapb/conf/`）** 与 2.55b（`addons/yapb/config/`），
+    解释 `couldn't exec addons/yapb/config/yapb.cfg` 与 `yapb.txt` 配置找不到错误；
+  - 记录 repack 原版 2.9 DLL 的 SHA-256 `3B9FDE32…27D4`、741152 字节、
+    Build 5395、编译时间与 Git Hash；
+  - 给出从 `D:\Counter Strike 8684(多BOT版).zip` 备份并提取 DLL 的 PowerShell 步骤；
+  - 记录临时只启用 AMXX + YAPB 的测试方法：用 `yb_quota 4` 观察 `Connecting Bot...`，
+    避免 `yb add` + `wait` + `status` 的“0 users”误判（`wait` 只等 1 帧）；
+  - 列出 2.9 的命令别名、`yb cmenu` 在服务端控制台的预期提示，以及测试后恢复
+    FAPB + ABPB 和运行 `doctor.py` 的步骤。
+- README 的“想换回 YAPB”一节补充 2.9 与 2.55b 的目录差异和测试注意事项。
+
+### 验证
+- HLDS 中 `[YAPB] Bot v2.9.0.5395 Loaded`，`meta info yapb` 显示 `version: 2.9`；
+- `yb_quota 4` 运行约 25 秒后 `qconsole.log` 出现 4 条 `Connecting Bot...` 和 bot 聊天消息；
+- 测试后恢复 FAPB + ABPB 的 `plugins.ini` / `server.cfg`，`doctor.py` 报告“一切正常”。
+
 ## 1.2.1 — 2026-11-17
 
 修复 YAPB 菜单与 FAPB cmenu 的冲突：`plugins.ini` 中用“前导空格”伪装的禁用行实际仍会加载。

@@ -337,13 +337,26 @@ powershell -ExecutionPolicy Bypass -File .\scripts\restore.ps1 `
 
 ---
 
-## 想换回 YAPB？
+## 想换回 YAPB / 修复 YAPB 2.9？
 
-把 `plugins.ini` 里 `yapb.dll` 那行取消注释、注释 `fapb.dll` 那行，然后跑一次
-`doctor.py` 确认只有一套 Bot 核心。**任何情况下都不要同时启用两套会补位的核心。**
+本仓库的默认状态是 FAPB + ABPB；YAPB 只保留在磁盘上（`plugins.ini` 中已注释）。
+如果整合包自带的 YAPB 2.9 被 2.55b 的 DLL 覆盖，会出现
+`couldn't exec addons/yapb/config/yapb.cfg`，`yapb.txt` 反复报
+`Name configuration file not found.` / `General configuration file not found.`。
+真正的 2.9 使用 `addons/yapb/conf/`，**不是** `config/`。DLL 哈希、从 repack 压缩包恢复、
+测试与回滚步骤见 [docs/yapb-2.9-restore.md](docs/yapb-2.9-restore.md)。
 
-同时清掉 `config.cfg` / `userconfig.cfg` 里残留的 `bind ... "yb menu"` 或
-`bind ... "yb cmenu"`，否则同一个键可能同时触发 YAPB 和 FAPB 的菜单。
+临时启用 YAPB 时：
+
+1. `plugins.ini` 只留 AMXX + YAPB，注释 FAPB / ABPB 及其他 Bot 核心；
+2. `meta list` 应为 `yapb.dll RUN v2.9`，`yb version` 应为 Build 5395；
+3. 用 `yb_quota 4` 观察 `Connecting Bot...`，不要用 `yb add` + `wait` + `status` 误判
+   （GoldSrc 的 `wait` 只等 1 帧，不是睡眠）；
+4. 测试完恢复 FAPB + ABPB 的 `plugins.ini` 和 `server.cfg`，再跑一次 `doctor.py`。
+
+**任何情况下都不要同时启用两套会补位的核心。** 同时清掉 `config.cfg` / `userconfig.cfg`
+里残留的 `bind ... "yb menu"` 或 `bind ... "yb cmenu"`，否则同一个键可能同时触发
+YAPB 和 FAPB 的菜单。
 
 ---
 
@@ -358,7 +371,8 @@ fapb-kickfix/
 │  ├─ diagnosis.md          0x18173 崩溃取证（历史，仍然有效）
 │  ├─ fapb-dll-repair.md    导入表损坏、重建过程、哈希、ABPB 细节
 │  ├─ abpb-compat.md        ABPB 检测表分析 + 两种共存模式
-│  └─ menu-conflict.md      YAPB / FAPB 菜单冲突与“前导空格伪注释”问题
+│  ├─ menu-conflict.md      YAPB / FAPB 菜单冲突与“前导空格伪注释”问题
+│  └─ yapb-2.9-restore.md   还原 repack 原版 YAPB 2.9（conf/ 布局、哈希、测试命令）
 └─ scripts/
    ├─ fapb_rebuild.py       重建 DLL（1.2.0 核心）
    ├─ install.ps1
