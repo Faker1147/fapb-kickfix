@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.2.1 — 2026-11-17
+
+修复 YAPB 菜单与 FAPB cmenu 的冲突：`plugins.ini` 中用“前导空格”伪装的禁用行实际仍会加载。
+
+### 修复
+- **`plugins.ini` 前导空格**：Metamod 会去掉行首空白，` win32 addons/yapb/bin/yapb.dll`
+  仍是启用状态；只有 `;` / `//` 才算注释。实测一次加载了 CS Bot Enabler / PODBot / SYPB /
+  YAPB / EBot / ABPB / FAPB 共 7 个核心，YAPB 与 FAPB 同源菜单互相抢 `menuselect`，
+  造成 FAPB cmenu 数字键错乱。修复后只保留 FAPB + ABPB。
+- **`fapb_abpb_setup.ps1`**：新增 `-PluginsOnly`，只规范化 `plugins.ini`，不改 cvars/DLL；
+  写入后重新解析并校验活动核心必须正好是 FAPB + ABPB。
+- **`install.ps1`**：写入后校验除 FAPB 外没有其他活动核心，防止“空格伪注释”回归。
+- **`doctor.py`**：同时加载多个核心时，单独列出只有前导空格的伪注释行，并提示
+  `fapb_abpb_setup.ps1 -PluginsOnly`。
+- **AMXX 附带清理**：关闭 CSBot Enabler 后，`zbot_strengthen.amxx` 会反复报
+  `Invalid CVAR pointer`；不用 ZBot 时把该插件也注释掉（本机已处理）。
+
+### 文档
+- 新增 `docs/menu-conflict.md`：症状、根因、真实 HLDS 前后对比、修复与验证。
+- README 补充“前导空格不是注释”和菜单冲突说明。
+
+### 验证
+- 修复前 HLDS：CS Bot Enabler / PODBot / ABPB / SyPB / YAPB / EBot / FAPB 全部加载。
+- 修复后 HLDS：只有 FAPB + ABPB；`yapb.txt` 不再更新，`fapb.txt` 继续更新；
+  `doctor.py` 报告“一切正常”。
+
 ## 1.2.0 — 2026-11-16
 
 找到并修复了 1.0/1.1 没有触及的根因：**FAPB 1.6 发布版 `fapb.dll` 的导入表是坏的**。

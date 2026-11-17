@@ -115,6 +115,9 @@ powershell -ExecutionPolicy Bypass -File .\fapb_abpb_setup.ps1 -GameDir "D:\CS1.
 # 只打/撤守卫补丁
 python .\scripts\abpb_compat.py --dll "...\addons\ABPB\bin\ABPB.dll" --apply
 python .\scripts\abpb_compat.py --dll "...\addons\ABPB\bin\ABPB.dll" --revert
+
+# 只修 YAPB / FAPB 菜单冲突（不改 cvars、DLL）
+powershell -ExecutionPolicy Bypass -File .\fapb_abpb_setup.ps1 -GameDir "D:\CS1.6" -PluginsOnly
 ```
 
 脚本会先把 `plugins.ini`、`fapb.dll`、`ABPB.dll`、`fapb.cfg`、`ABPB.cfg` 备份到
@@ -140,6 +143,9 @@ fapb version
 - 两套 BOT 同时加载意味着两套引擎 Hook（`ClientCommand` / `SayText` / `ServerActivate` 等）。
   ABPB 官方文档也只承诺"可同时安装、单方管理"。如果出现菜单错乱、说话重复之类的怪现象，
   退回 `plugins.ini` 只留一套（上一版 `install.ps1` 做的就是这个）。
+- 行首只有空格**不是注释**：Metamod 会忽略前导空白，` win32 addons/yapb/...`
+  仍会加载。必须用 `;` 或 `//`。这个坑会让 YAPB 和 FAPB 的菜单同时存在，
+  详见 `docs/menu-conflict.md`。
 - 本文的偏移覆盖 **ABPB 4.3.3-abpb.1** 和 **abpb.2** 两个构建；两者的补丁后哈希
   分别是 `675a62ad…669ed` / `f2750780…254d`。其它版本偏移不同，不要套用。
 - 1.2.0 起 FAPB 使用重建版 DLL（`9afdaa67…8c96`），**不要**再给它打 0x1811D 的

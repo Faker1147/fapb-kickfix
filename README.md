@@ -115,11 +115,24 @@ Windows 事件查看器里能看到同样的记录，`%LOCALAPPDATA%\CrashDumps\
 多套 Bot 核心的环境里，这个指针会变成悬垂指针；`+0x98` 所在页不可读，踢 Bot 进入析构
 函数时必崩。
 
-### 3) 多套 Bot 核心会放大问题
+### 3) 多套 Bot 核心会放大问题（也是 YAPB / FAPB 菜单冲突的根因）
 
 原 `plugins.ini` 同时启用了 YAPB / SYPB / PODBot / EBot / CSBot Enabler / FAPB 六套核心。
 它们都去 Hook `GiveFnptrsToDll` / `ServerActivate` / `ClientPutInServer`，引擎全局状态被
 反复重建，FAPB 缓存的 `gpGlobals` 更容易失效。
+
+更隐蔽的是，这些“被禁用”的行前面只有一个**空格**，没有 `;`。Metamod 解析时会去掉
+行首空白，所以它们实际上全部处于启用状态：
+
+```ini
+; win32 addons/yapb/bin/yapb.dll     ; 正确：禁用
+ win32 addons/yapb/bin/yapb.dll     ; 错误：仍然启用
+```
+
+YAPB 和 FAPB 都是 YaPB 2.55b 的改名分支，都会注册菜单命令并维护自己的
+`menuselect` 状态。两套同时加载时，FAPB cmenu 的数字键会被 YAPB 菜单一并看到，
+表现为“按数字键弹出/执行 YAPB 菜单”。**这不是 FAPB 菜单代码单独的错误，而是同源
+菜单被重复加载。** 只保留 FAPB + ABPB 即可，详见 `docs/menu-conflict.md`。
 
 > 旧版 `docs/diagnosis.md` 记录的 0x18173 取证仍然有效；它解释的是“为什么踢 BOT 会崩”，
 > 而 `docs/fapb-dll-repair.md` 补充了更底层的“为什么这个 DLL 从一开始就是坏的”。
@@ -163,6 +176,17 @@ Windows 事件查看器里能看到同样的记录，`%LOCALAPPDATA%\CrashDumps\
 
 `install.ps1` 会注释 YAPB / SYPB / PODBot / EBot / CSBot Enabler，只保留 FAPB；
 如果已经装了 ABPB，ABPB 的行不会被删（见下一节）。
+
+> 行首只加空格**不会**禁用插件；Metamod 会忽略前导空格。必须用 `;` 或 `//` 开头。
+> 只修菜单冲突、不想改 cvars/DLL 时，运行：
+>
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File .\scripts\fapb_abpb_setup.ps1 `
+>   -GameDir "D:\Counter Strike 8684(多BOT版)" -PluginsOnly
+> ```
+>
+> 关掉 CSBot Enabler 后，如果 AMXX 的 `zbot_strengthen.amxx` 报 `Invalid CVAR pointer`，
+> 把该插件也注释掉（它只服务 ZBot，FAPB/ABPB 不需要）。
 
 ```ini
 win32 addons/amxmodx/dlls/amxmodx_mm.dll
@@ -239,7 +263,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\fapb_abpb_setup.ps1 `
 | --- | --- |
 | `scripts/fapb_rebuild.py` | **1.2.0 核心**：重建带真实导入表的 `fapb.dll`，支持下载/本地素材、哈希校验、`--install` |
 | `scripts/install.ps1` | 备份 → 单核心 `plugins.ini` → 检查 DLL（默认不再打 5 字节补丁） |
-| `scripts/fapb_abpb_setup.ps1` | 让 FAPB 与 ABPB 共存，`-Mode abpb\|fapb`；`-RebuildFapb` 可选重建 |
+| `scripts/fapb_abpb_setup.ps1` | 让 FAPB 与 ABPB 共存，`-Mode abpb\|fapb`；`-RebuildFapb` 可选重建；`-PluginsOnly` 只修菜单冲突 |
 | `scripts/restore.ps1` | 从备份还原 `plugins.ini` / `fapb.dll` / `ABPB.dll` / 两个 cfg |
 | `scripts/fapb_patch.py` | 查看/撤销旧 5 字节补丁；拒绝在重建版上打补丁 |
 | `scripts/abpb_compat.py` | 修 ABPB 的 BOT 检测表，让它认得出 FAPB（支持 abpb.1 / abpb.2） |
@@ -258,6 +282,10 @@ python .\scripts\fapb_rebuild.py --artifacts .\tools\artifacts --install `
 
 # 只改配置、不动 DLL
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -NoDllPatch
+
+# 只修 YAPB / FAPB 菜单冲突（只改 plugins.ini，不动 cvars/DLL）
+powershell -ExecutionPolicy Bypass -File .\scripts\fapb_abpb_setup.ps1 `
+  -GameDir "D:\Counter Strike 8684(多BOT版)" -PluginsOnly
 
 # 撤销误打的 5 字节补丁
 python .\scripts\fapb_patch.py --dll "...\fapb.dll" --revert
@@ -314,6 +342,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\restore.ps1 `
 把 `plugins.ini` 里 `yapb.dll` 那行取消注释、注释 `fapb.dll` 那行，然后跑一次
 `doctor.py` 确认只有一套 Bot 核心。**任何情况下都不要同时启用两套会补位的核心。**
 
+同时清掉 `config.cfg` / `userconfig.cfg` 里残留的 `bind ... "yb menu"` 或
+`bind ... "yb cmenu"`，否则同一个键可能同时触发 YAPB 和 FAPB 的菜单。
+
 ---
 
 ## 目录结构
@@ -326,7 +357,8 @@ fapb-kickfix/
 ├─ docs/
 │  ├─ diagnosis.md          0x18173 崩溃取证（历史，仍然有效）
 │  ├─ fapb-dll-repair.md    导入表损坏、重建过程、哈希、ABPB 细节
-│  └─ abpb-compat.md        ABPB 检测表分析 + 两种共存模式
+│  ├─ abpb-compat.md        ABPB 检测表分析 + 两种共存模式
+│  └─ menu-conflict.md      YAPB / FAPB 菜单冲突与“前导空格伪注释”问题
 └─ scripts/
    ├─ fapb_rebuild.py       重建 DLL（1.2.0 核心）
    ├─ install.ps1

@@ -46,6 +46,12 @@
 .PARAMETER NoFapbPatch
     Do not inspect or touch fapb.dll at all (legacy flag).
 
+.PARAMETER PluginsOnly
+    Only normalize plugins.ini: keep FAPB + ABPB active and disable YAPB /
+    SYPB / PODBot / EBot / CSBot Enabler.  Does not touch cvars or DLLs.
+    Use this to repair the YAPB-menu / FAPB-cmenu conflict without changing
+    the current quota owner.
+
 .PARAMETER Force
     Continue even if hl.exe is running.  Not recommended.
 
@@ -55,6 +61,7 @@
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\fapb_abpb_setup.ps1 -GameDir "D:\CS1.6" -Mode abpb
     powershell -ExecutionPolicy Bypass -File .\fapb_abpb_setup.ps1 -GameDir "D:\CS1.6" -Mode fapb -WhatIf
+    powershell -ExecutionPolicy Bypass -File .\fapb_abpb_setup.ps1 -GameDir "D:\CS1.6" -PluginsOnly
 #>
 [CmdletBinding()]
 param(
@@ -68,6 +75,7 @@ param(
     [string]$ArtifactsDir = "",
     [switch]$LegacyFapbPatch,
     [switch]$NoFapbPatch,
+    [switch]$PluginsOnly,
     [switch]$Force,
     [switch]$WhatIf
 )
@@ -173,11 +181,14 @@ $abpbDll = Join-Path $cstrike 'addons\ABPB\bin\ABPB.dll'
 $fapbCfg = Join-Path $cstrike 'addons\fapb\config\fapb.cfg'
 $abpbCfg = Join-Path $cstrike 'addons\ABPB\conf\ABPB.cfg'
 
-foreach ($p in @($plugins, $fapbDll, $abpbDll)) {
-    if (-not (Test-Path -LiteralPath $p)) { throw "missing: $p" }
-}
-if (-not (Test-Path -LiteralPath $abpbCfg)) {
-    Write-Warning "ABPB.cfg not found: $abpbCfg (values will be appended where possible)"
+if (-not (Test-Path -LiteralPath $plugins)) { throw "missing: $plugins" }
+if (-not $PluginsOnly) {
+    foreach ($p in @($fapbDll, $abpbDll)) {
+        if (-not (Test-Path -LiteralPath $p)) { throw "missing: $p" }
+    }
+    if (-not (Test-Path -LiteralPath $abpbCfg)) {
+        Write-Warning "ABPB.cfg not found: $abpbCfg (values will be appended where possible)"
+    }
 }
 
 Write-Host "Game folder : $GameDir" -ForegroundColor Cyan
@@ -187,7 +198,9 @@ $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $backupDir = Join-Path $cstrike "addons\fapb\backup\abpb-$stamp"
 if (-not $WhatIf) {
     New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
-    foreach ($p in @($plugins, $fapbDll, $abpbDll, $fapbCfg, $abpbCfg)) {
+    $backupItems = @($plugins)
+    if (-not $PluginsOnly) { $backupItems += @($fapbDll, $abpbDll, $fapbCfg, $abpbCfg) }
+    foreach ($p in $backupItems) {
         if (Test-Path -LiteralPath $p) {
             Copy-Item -LiteralPath $p -Destination (Join-Path $backupDir (Split-Path -Leaf $p)) -Force
         }
@@ -196,6 +209,8 @@ if (-not $WhatIf) {
 }
 
 # ---------------------------------------------------------------- plugins ---
+# Metamod trims leading whitespace before parsing, so " win32 ..." is ACTIVE.
+# Only a ';' or '//' prefix disables a line.  A leading space is NOT a comment.
 $botCoreRe = '^\s*(win32\s+)?addons[\\/](yapb|sypb|podbot|ebot|csbot_enabler|fapb|ABPB)[\\/]'
 $fapbRe = 'addons[\\/]fapb[\\/]dlls[\\/]fapb\.dll'
 $abpbRe = 'addons[\\/]ABPB[\\/]bin[\\/]ABPB\.dll'
@@ -236,6 +251,41 @@ if ($WhatIf) {
 } else {
     Write-TextFile -Path $plugins -Lines $out
     Write-Host "plugins.ini : comment $disabled core(s); fapb + ABPB enabled" -ForegroundColor Green
+}
+
+# Verify what Metamod will actually load.  This also catches a line that was
+# "disabled" with only a leading space, which Metamod still treats as active.
+$activeCores = @($out | Where-Object {
+    ($_ -match $botCoreRe) -and
+    (-not $_.TrimStart().StartsWith(';')) -and
+    (-not $_.TrimStart().StartsWith('//'))
+})
+$hasFapb = @($activeCores | Where-Object {
+    $_ -match 'addons[\\/]fapb[\\/]dlls[\\/]fapb\.dll'
+}).Count -gt 0
+$hasAbpb = @($activeCores | Where-Object {
+    $_ -match 'addons[\\/]ABPB[\\/]bin[\\/]ABPB\.dll'
+}).Count -gt 0
+if ($activeCores.Count -ne 2 -or -not $hasFapb -or -not $hasAbpb) {
+    throw ("plugins.ini verification failed: expected fapb + ABPB, got: " +
+           ($activeCores -join ', '))
+}
+Write-Host "plugins.ini : verified active cores = FAPB + ABPB" -ForegroundColor Green
+
+if ($PluginsOnly) {
+    Write-Host ""
+    Write-Host "Done (plugins.ini only)." -ForegroundColor Cyan
+    Write-Host "  YAPB / SYPB / PODBot / EBot / CSBot Enabler are disabled."
+    Write-Host "  The YAPB-menu / FAPB-cmenu conflict is gone."
+    if (-not $WhatIf) {
+        Write-Host "  Restore: powershell -ExecutionPolicy Bypass -File .\restore.ps1 -BackupDir `"$backupDir`""
+        try {
+            [void](Invoke-PythonTool -Tool (Join-Path $scriptRoot 'doctor.py') -Arguments @('--game-dir', $GameDir))
+        } catch {
+            Write-Warning "doctor.py failed: $_"
+        }
+    }
+    return
 }
 
 # ------------------------------------------------------------------- cvars --

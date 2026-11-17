@@ -137,6 +137,8 @@ if (-not $WhatIf) {
 }
 
 # ------------------------------------------------------------ plugins.ini ---
+# Metamod trims leading whitespace before parsing, so " win32 ..." is ACTIVE.
+# Only a ';' or '//' prefix disables a line.  A leading space is NOT a comment.
 $botCoreRe = '^\s*win32\s+addons[\\/](yapb|sypb|podbot|ebot|csbot_enabler|fapb)[\\/]'
 $fapbRe = 'addons[\\/]fapb[\\/]dlls[\\/]fapb\.dll'
 $amxxBlRe = '^\s*win32\s+addons[\\/]amxmodx[\\/]dlls[\\/]amxmodx_bl_mm\.dll'
@@ -184,6 +186,19 @@ if ($WhatIf) {
     Set-Content -LiteralPath $plugins -Value $out -Encoding ASCII
     Write-Host "plugins.ini updated: commented $disabled line(s), FAPB enabled" -ForegroundColor Green
 }
+
+# Verify what Metamod will actually load.  ABPB lines are intentionally left
+# alone; every other bot core must now be commented with ';' or '//'.
+$activeCores = @($out | Where-Object {
+    ($_ -match $botCoreRe) -and
+    (-not $_.TrimStart().StartsWith(';')) -and
+    (-not $_.TrimStart().StartsWith('//'))
+})
+if ($activeCores.Count -ne 1 -or $activeCores[0] -notmatch $fapbRe) {
+    throw ("plugins.ini verification failed: expected only FAPB, got: " +
+           ($activeCores -join ', '))
+}
+Write-Host "plugins.ini : verified only FAPB is active" -ForegroundColor Green
 
 # ------------------------------------------------------------------- dll ----
 $py = Get-Python

@@ -187,7 +187,7 @@ def main(argv=None):
         print("    !! plugins.ini 不存在")
         problems += 1
     else:
-        bots, amxx, _ = parsed
+        bots, amxx, plines = parsed
         is_pair = (len(bots) == 2
                    and any("fapb" in b.lower() for b in bots)
                    and any("abpb" in b.lower() for b in bots))
@@ -227,9 +227,22 @@ def main(argv=None):
                           "或把补位交给 FAPB")
                     problems += 1
         else:
-            print("    !! 同时加载了 %d 个 Bot 核心 (FAPB 会随机/必然崩溃):" % len(bots))
+            print("    !! 同时加载了 %d 个 Bot 核心 "
+                  "(会抢 Hook，导致 YAPB/FAPB 菜单错乱、重复 Bot、甚至崩溃):" % len(bots))
             for b in bots:
                 print("         - %s" % b)
+            # Metamod ignores leading whitespace, so " win32 addons/yapb/..."
+            # is still loaded.  Only ';' or '//' disables a line.
+            indented = [ln.strip() for ln in plines
+                        if ln[:1].isspace()
+                        and BOT_CORE_RE.match(ln)
+                        and not ln.strip().startswith((";", "//"))]
+            if indented:
+                print("       注意: 下面的行只有前导空格、没有注释，Metamod 仍会加载：")
+                for ln in indented:
+                    print("         > %s" % ln)
+                print("       前导空格不是注释；必须用 ';' 或 '//' 开头。")
+            print("       -> 修复: fapb_abpb_setup.ps1 -PluginsOnly")
             problems += 1
         for m in amxx:
             print("    AMXX: %s" % m)
